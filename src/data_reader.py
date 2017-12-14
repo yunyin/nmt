@@ -11,19 +11,21 @@ class Vocab():
   def create_vocab(self, datafiles, metadata, vocab_limits = -1):
     print 'Start Vocab Create'
     sys.stdout.flush()
-    total_data = []
+    dicts = dict()
+    max_freq = 0
     for line in open(datafiles):
-      words = line.strip().split(' ')
-      #words = list(line.strip().replace(" ", "").decode('utf-8'))
-      total_data.extend(words)
-
+      for word in line.strip().split(' '):
+        if not dicts.has_key(word): dicts[word] = 0
+        dicts[word] += 1
     print 'Data Load End For Vocab Create'
     sys.stdout.flush()
-    words = list(set(total_data))
-    words.sort()
+
+    dicts = sorted(dicts.items(), lambda x, y: cmp(x[1], y[1]), reverse = True)
+    words = [word[0] for word in dicts]
     words.insert(0, '<unk>')
     words.insert(0, '</s>')
     words.insert(0, '<s>')
+    print 'Real Words in Data: %d' % len(words)
 
     if vocab_limits == -1: self._vocab_size = len(words)
     else: self._vocab_size = min(vocab_limits, len(words))
@@ -158,11 +160,29 @@ class DataReader():
       y_masks.append(my)
       self.pointer += 1
 
-    return x_batches, y_batches, x_masks, y_masks
+    return np.array(x_batches), np.array(y_batches), np.array(x_masks), np.array(y_masks)
 
-if __name__=='__main__':
+def create_vocab():
   vocab = Vocab()
   vocab.create_vocab(datafiles = sys.argv[1],
                      metadata = sys.argv[2],
                      vocab_limits = int(sys.argv[3]))
   vocab.load_metadata(sys.argv[2])
+
+def read_data():
+  src_vocab = Vocab()
+  src_vocab.load_metadata(sys.argv[3])
+  tgt_vocab = Vocab()
+  tgt_vocab.load_metadata(sys.argv[4])
+
+  reader = DataReader(sys.argv[1], sys.argv[2], src_vocab, tgt_vocab,
+                      src_length = 20, tgt_length = 20, batch_size = 2)
+
+  while reader.has_next_batch():
+    src_in, tgt_in, src_mask, tgt_mask = reader.next_batch()
+    print src_in
+    print tgt_in
+
+if __name__=='__main__':
+  #read_data()
+  create_vocab()
