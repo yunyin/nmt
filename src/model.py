@@ -158,8 +158,9 @@ class Model():
       self.encode_input = tf.placeholder(tf.int32, [config['batch_size'], config['src_length']])
       self.encode_mask = tf.placeholder(tf.float32, [config['batch_size'], config['src_length']])
 
-    self._encoder = self._build_encode(input = self.encode_input, mask = self.encode_mask,
-                                        config = config)
+    self._encoder = self._build_encode(input = self.encode_input,
+                                       mask = self.encode_mask,
+                                       config = config)
 
     with tf.name_scope('decode_input'):
       self.decode_input = tf.placeholder(tf.int32, [config['batch_size'], seq_length])

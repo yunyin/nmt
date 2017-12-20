@@ -65,8 +65,14 @@ def run_epoch(sess, model, data, is_training = False):
 
   return costs / words
 
-def sample_run(model, src_in, max_beam, max_len):
-  pass
+def sample_run(sess, model, src_in, src_mask, max_beam):
+  src_in = np.reshape(src_in, [1, -1])
+  src_mask = np.reshape(src_mask, [1, -1])
+  ctx = sess.run(model._encoder,
+                 {model.encode_input: src_in, model.encode_mask: src_mask})
+  print ctx
+  print ctx.shape
+  return ctx
 
 def gen(config, gen_file):
   # load Vocab
@@ -81,6 +87,7 @@ def gen(config, gen_file):
 
   # create model
   with tf.name_scope('Genearte'):
+    config['batch_size'] = 5
     with tf.variable_scope("Model", reuse = None):
       gen_model = model.Model(is_training = False,
                               config = config,
@@ -93,20 +100,22 @@ def gen(config, gen_file):
   sess_config.gpu_options.per_process_gpu_memory_fraction = 0.5
 
   tf.logging.info('Start Sess')
-
-  for line in open(gen_file):
-    words = line.strip().split(' ')
-    words.insert(0, "<s>")
-    words.append("</s>")
-    masks = [1] * len(words)
-    if len(words) < config['src_length']:
-      masks.extend([0] * (config['src_length'] - len(words)))
-      words.extend(["</s>"] * (config['src_length'] - len(words)))
-    src_vec = [src_vocab.char2id(c) for c in words]
-    out_vec = sample_run(gen_model, src_vec, config['batch_size'])
-    out_words = [tgt_vocab.id2char(c) for c in out_vec]
-    tf.logging.info('Input: %s' % line.strip())
-    tf.logging.info('Output: %s' % (" ".join(out_words)))
+  with sv.managed_session(config=sess_config) as sess:
+    for line in open(gen_file):
+      words = line.strip().split(' ')
+      words.insert(0, "<s>")
+      words.append("</s>")
+      masks = [1] * len(words)
+      if len(words) < config['src_length']:
+        masks.extend([0] * (config['src_length'] - len(words)))
+        words.extend(["</s>"] * (config['src_length'] - len(words)))
+      src_vec = [src_vocab.char2id(c) for c in words]
+      src_vec = np.array(src_vec)
+      masks = np.array(masks)
+      out_vec = sample_run(sess, gen_model, src_vec, masks, 5)
+      out_words = [tgt_vocab.id2char(c) for c in out_vec]
+      tf.logging.info('Input: %s' % line.strip())
+      tf.logging.info('Output: %s' % (" ".join(out_words)))
 
 def train(config):
   # load Vocab
