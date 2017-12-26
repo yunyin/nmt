@@ -41,6 +41,7 @@ def run_epoch(sess, model, data, is_training = False):
   words = 0
   while data.has_next_batch():
     x_batch, y_batch, x_mask, y_mask = data.next_batch()
+
     feed_dict = {model.encode_input: x_batch,
                  model.encode_mask: x_mask,
                  model.decode_input: y_batch[:, :-1],
@@ -65,14 +66,83 @@ def run_epoch(sess, model, data, is_training = False):
 
   return costs / words
 
-def sample_run(sess, model, src_in, src_mask, max_beam):
+def sample_run(sess, model, src_in, src_mask, bos_id, eos_id, maxans = 5, maxlen = 30):
+  sample = []
+  sample_score = []
+  # one sentence per sample_run
   src_in = np.reshape(src_in, [1, -1])
   src_mask = np.reshape(src_mask, [1, -1])
-  ctx = sess.run(model._encoder,
-                 {model.encode_input: src_in, model.encode_mask: src_mask})
-  print ctx
-  print ctx.shape
-  return ctx
+  ctx0 = sess.run(model.encoder,
+                  {model.encode_input: src_in, model.encode_mask: src_mask})
+
+  next_state = sess.run(model.init_states)
+  next_state = np.tile(next_state, [1, 1])
+  next_w = np.array([bos_id])
+
+  live_k = 1
+  dead_k = 0
+
+  hyp_samples = [[]] * live_k
+  hyp_scores = np.zeros(live_k).astype('float32')
+  for i in range(maxlen):
+    ctx = np.tile(ctx0, [live_k, 1, 1])
+    next_w = np.reshape(next_w, [next_w.shape[0], 1])
+    next_m = np.ones_like(next_w)
+    fetches = {"next_state": model.decode_states,
+               "probs": model.probs}
+    feed_dict = {model.decode_input: next_w,
+                 model.decode_imask: next_m,
+                 model.decode_state: next_state,
+                 model.encode_mask: src_mask,
+                 model.encoder: ctx}
+    vals = sess.run(fetches, feed_dict)
+
+    probs = np.reshape(vals['probs'], [vals['probs'].shape[0], vals['probs'].shape[2]])
+    next_state = vals['next_state'][-1]
+
+    cand_scores = hyp_scores[:, None] - np.log(probs)
+    vocab_size = probs.shape[1]
+    cand_flat = cand_scores.flatten()
+
+    this_count = maxans - dead_k
+    ranks_flat = cand_flat.argsort()[:(this_count)]
+    trans_idx = ranks_flat / vocab_size
+    word_idx = ranks_flat % vocab_size
+
+    new_hyp_samples = []
+    new_hyp_scores = np.zeros(this_count).astype('float32')
+    new_hyp_states = []
+    for idx, [ti, wi] in enumerate(zip(trans_idx, word_idx)):
+      new_hyp_samples.append(hyp_samples[ti] + [wi])
+      new_hyp_scores[idx] = copy.copy(cand_scores[ti][wi])
+      new_hyp_states.append(copy.copy(next_state[ti]))
+
+    # check finished samples
+    new_live_k = 0
+
+    hyp_samples = []
+    hyp_scores = []
+    hyp_states = []
+    for idx in range(len(new_hyp_samples)):
+      if new_hyp_samples[idx][-1] == eos_id:
+        sample.append(new_hyp_samples[idx])
+        sample_score.append(new_hyp_scores[idx])
+        dead_k += 1
+      else:
+        new_live_k += 1
+        hyp_samples.append(new_hyp_samples[idx])
+        hyp_scores.append(new_hyp_scores[idx])
+        hyp_states.append(new_hyp_states[idx])
+    hyp_scores = np.array(hyp_scores)
+    live_k = new_live_k
+
+    if live_k <= 0 or dead_k >= maxans: break
+    next_w = np.array([w[-1] for w in hyp_samples])
+    next_state = np.array(hyp_states)
+  for idx in range(live_k):
+    sample.append(hyp_samples[idx])
+    sample_score.append(hyp_scores[idx])
+  return sample, sample_score
 
 def gen(config, gen_file):
   # load Vocab
@@ -87,7 +157,6 @@ def gen(config, gen_file):
 
   # create model
   with tf.name_scope('Genearte'):
-    config['batch_size'] = 5
     with tf.variable_scope("Model", reuse = None):
       gen_model = model.Model(is_training = False,
                               config = config,
@@ -112,8 +181,10 @@ def gen(config, gen_file):
       src_vec = [src_vocab.char2id(c) for c in words]
       src_vec = np.array(src_vec)
       masks = np.array(masks)
-      out_vec = sample_run(sess, gen_model, src_vec, masks, 5)
-      out_words = [tgt_vocab.id2char(c) for c in out_vec]
+      sample, scores = sample_run(sess, gen_model, src_vec, masks,
+                                  bos_id = tgt_vocab.char2id("<s>"),
+                                  eos_id = tgt_vocab.char2id("</s>"))
+      out_words = [tgt_vocab.id2char(c) for c in sample[0]]
       tf.logging.info('Input: %s' % line.strip())
       tf.logging.info('Output: %s' % (" ".join(out_words)))
 

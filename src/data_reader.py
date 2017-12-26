@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import numpy as np
+import pdb
 
 class Vocab():
   def __init__(self, vocab_limits = -1):
@@ -59,7 +60,7 @@ class Vocab():
 
     cnt = 0
     for line in open(file):
-      idx, word = line.strip().decode('utf-8').split('\t')
+      idx, word = line.strip().split('\t')
       self.char2id_dict[word] = int(idx)
       self.id2char_dict[int(idx)] = word
       cnt += 1
@@ -72,7 +73,6 @@ class Vocab():
     with open(file, 'w') as f:
       for i in range(self._vocab_size):
         c = self.id2char(i)
-        #f.write('{}\t{}\n'.format(i, c.encode('utf-8')))
         f.write('{}\t{}\n'.format(i, c))
 
 class DataReader():
@@ -183,6 +183,15 @@ def read_data():
     print src_in
     print tgt_in
 
+def test_vocab(file):
+  vocab = Vocab()
+  vocab.load_metadata(file)
+  for line in open(sys.argv[1]):
+    print line.strip()
+    for word in line.strip().split():
+      vocab.char2id(word),
+
 if __name__=='__main__':
   #read_data()
   create_vocab()
+  test_vocab(sys.argv[2])
