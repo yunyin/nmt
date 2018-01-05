@@ -6,7 +6,7 @@ def get_optimizer(optimizer='sgd', learning_rate=None, momentum=None):
   if optimizer == 'sgd':
     return tf.train.GradientDescentOptimizer(learning_rate), learning_rate
   elif optimizer == 'momentum':
-    if not momentum: momentum = 0.9
+    if not momentum: momentum = 0.99
     return tf.train.MomentumOptimizer(learning_rate, momentum), learning_rate
   elif optimizer == 'rmsprop':
     return tf.train.RMSPropOptimizer(learning_rate), learning_rate

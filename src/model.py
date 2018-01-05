@@ -18,6 +18,20 @@ class Model():
       return tf.contrib.rnn.BasicLSTMCell(
           hidden_size, forget_bias = 0.0, state_is_tuple = True)
 
+  def ff_cell(self, in_tensor, in_size, out_size, dtype, scope):
+    if len(in_tensor.get_shape()) != 2:
+      tf.logging.info('in_tensor shape is not 2 for ff_cell')
+      return None
+
+    with tf.variable_scope(scope):
+      W = tf.get_variable(
+          "Weight", [in_size, out_size], dtype = dtype)
+      b = tf.get_variable(
+          "bias", [out_size], dtype = dtype)
+
+    return tf.matmul(in_tensor, W) + b
+
+
   def init_decode_parameters(self, hidden_size, dtype):
     # variables for ~s(t)
     self.state_below_Wx = tf.get_variable(
@@ -79,15 +93,16 @@ class Model():
         tgt_embedding = tf.get_variable(
             "tgt_embedding", [vocab_size, hidden_size], dtype = dtype)
         decode_inputs = tf.nn.embedding_lookup(tgt_embedding, input)
-      batch_size = tf.shape(decode_inputs)[0]
-     
+
       self.init_states = tf.zeros([hidden_size], dtype = dtype)
 
       # only for training init
+      batch_size = tf.shape(decode_inputs)[0]
       self.decode_state = tf.zeros([batch_size, hidden_size], dtype = dtype)
 
       decode_state = self.decode_state
       decode_states = []
+      decode_context = []
       with tf.variable_scope("RNN"):
         self.init_decode_parameters(hidden_size = hidden_size, dtype = dtype)
         flattern_inputs = tf.reshape(decode_inputs, [-1, hidden_size])
@@ -147,10 +162,11 @@ class Model():
                          (1. - imask[:, time_step, None]) * hidden_decode_state
 
           decode_states.append(decode_state)
-    return decode_states
+          decode_context.append(context)
+
+    return decode_inputs, decode_states, decode_context
 
   def __init__(self, is_training, config, seq_length, optimizer = None, lr = None):
-
     hidden_size = config['hidden_size']
     self._optimizer = optimizer
     self._lr = lr
@@ -169,28 +185,41 @@ class Model():
       self.decode_input = tf.placeholder(tf.int32, [None, seq_length])
       self.decode_imask = tf.placeholder(tf.float32, [None, seq_length])
 
-    self.decode_states= self._build_decode(input = self.decode_input,
-                                           imask = self.decode_imask,
-                                           encode = self.encoder,
-                                           encode_mask = self.encode_mask,
-                                           src_length = config['src_length'],
-                                           seq_length = seq_length,
-                                           vocab_size = config['tgt_vocab_size'],
-                                           hidden_size = config['hidden_size'],
-                                           dtype = config['data_type'])
+    decode_emb, self.decode_states, ctx = \
+        self._build_decode(input = self.decode_input,
+                           imask = self.decode_imask,
+                           encode = self.encoder,
+                           encode_mask = self.encode_mask,
+                           src_length = config['src_length'],
+                           seq_length = seq_length,
+                           vocab_size = config['tgt_vocab_size'],
+                           hidden_size = config['hidden_size'],
+                           dtype = config['data_type'])
 
     with tf.name_scope('decode_output'):
       self.decode_output = tf.placeholder(tf.int32, [None, seq_length])
       self.decode_omask = tf.placeholder(tf.float32, [None, seq_length])
 
     with tf.name_scope('loss'):
-      outputs = tf.reshape(tf.stack(axis = 1, values = self.decode_states), [-1, hidden_size])
-      softmax_w = tf.get_variable(
-          "softmax_w", [hidden_size, config['tgt_vocab_size']], dtype = config['data_type'])
-      softmax_b = tf.get_variable(
-          "softmax_b", [config['tgt_vocab_size']], dtype = config['data_type'])
-      logits = tf.matmul(outputs, softmax_w) + softmax_b
+      state_stack = tf.reshape(tf.stack(axis = 1, values = self.decode_states), [-1, hidden_size])
+      logit_lstm = self.ff_cell(in_tensor = state_stack,
+                                in_size = hidden_size, out_size = hidden_size,
+                                dtype = config['data_type'], scope = 'ff_logit_lstm')
+      emb_stack = tf.reshape(decode_emb, [-1, hidden_size])
+      logit_emb = self.ff_cell(in_tensor = emb_stack,
+                               in_size = hidden_size, out_size = hidden_size,
+                               dtype = config['data_type'], scope = 'ff_logit_emb')
 
+      ctx_stack = tf.reshape(tf.stack(axis = 1, values = ctx), [-1, 2 * hidden_size])
+      logit_ctx = self.ff_cell(in_tensor = ctx_stack,
+                               in_size = 2 * hidden_size, out_size = hidden_size,
+                               dtype = config['data_type'], scope = 'ff_logit_ctx')
+
+#      logits = tf.tanh(logit_lstm)
+      logits = tf.tanh(logit_lstm + logit_emb + logit_ctx)
+      logits = self.ff_cell(in_tensor = logits,
+                            in_size = hidden_size, out_size = config['tgt_vocab_size'],
+                            dtype = config['data_type'], scope = 'logit_calc')
       logits = tf.reshape(logits, [-1, seq_length, config['tgt_vocab_size']])
 
       self.probs = tf.nn.softmax(logits)
@@ -199,8 +228,8 @@ class Model():
           logits = logits,
           targets = self.decode_output,
           weights = self.decode_omask,
-          average_across_timesteps=True,
-          average_across_batch=False)
+          average_across_timesteps = False,
+          average_across_batch = False)
 
       self._cost = cost = tf.reduce_sum(loss)
 
@@ -211,7 +240,7 @@ class Model():
       grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars),
                                         config['max_grad_norm'])
       self._train_op = self._optimizer.apply_gradients(zip(grads, tvars),
-                 global_step = tf.contrib.framework.get_or_create_global_step())
+                 global_step = tf.train.get_or_create_global_step())
 
     self._new_lr = tf.placeholder(tf.float32, shape=[])
     self._lr_update = tf.assign(self._lr, self._new_lr)

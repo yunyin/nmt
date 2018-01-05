@@ -34,7 +34,8 @@ def HParam():
   else: config['data_type'] = tf.float32
   return config
 
-def run_epoch(sess, model, data, is_training = False):
+def run_epoch(sess, model, data, is_training = False,
+              t_model = None, src_vocab = None, tgt_vocab = None):
   data.reset()
   costs = 0
   times = 0
@@ -48,7 +49,7 @@ def run_epoch(sess, model, data, is_training = False):
                  model.decode_imask: y_mask[:, :-1],
                  model.decode_output: y_batch[:, 1:],
                  model.decode_omask: y_mask[:, 1:]}
-    fetches = {"costs": model._cost, "probs": model.probs}
+    fetches = {"probs": model.probs}
     if is_training: fetches["train_op"] = model.train_op
 
     vals = sess.run(fetches, feed_dict)
@@ -58,15 +59,26 @@ def run_epoch(sess, model, data, is_training = False):
     real_probs = vals["probs"].reshape(-1)[real_index]
     costs += -1.0 * np.sum(np.log(real_probs) * y_mask[:, 1:].reshape(-1))
 
-#    costs += vals["costs"]
     words += np.sum(y_mask[:, 1:])
     times += 1
     if times % 2000 == 100:
-      tf.logging.info('step %d: training_loss: %.4f' % (times, np.power(2, costs / words)))
+      tf.logging.info('step %d: training_loss: %.4f' %
+                      (times, np.power(2, costs / words)))
+    if times % 20000 == 0 and t_model != None:
+      for idx in range(len(x_batch)):
+        output, scores = sample_run(sess, t_model, x_batch[idx], x_mask[idx])
+        in_words = [src_vocab.id2char(c) for c in x_batch[idx]]
+        tf.logging.info('Input: %s' % (" ".join(in_words)))
+
+        re_words = [tgt_vocab.id2char(c) for c in y_batch[idx]]
+        tf.logging.info('Real: %s' % (" ".join(re_words)))
+
+        out_words = [tgt_vocab.id2char(c) for c in output[0]]
+        tf.logging.info('Output: %s' % (" ".join(out_words)))
 
   return costs / words
 
-def sample_run(sess, model, src_in, src_mask, bos_id, eos_id, maxans = 5, maxlen = 30):
+def sample_run(sess, model, src_in, src_mask, bos_id = 0, eos_id = 1, maxans = 5, maxlen = 50):
   sample = []
   sample_score = []
   # one sentence per sample_run
@@ -199,6 +211,30 @@ def train(config):
   config['tgt_vocab_size'] = tgt_vocab.vocab_size()
   tf.logging.info(config)
 
+  initializer = tf.random_uniform_initializer(-config['init_scale'], config['init_scale'])
+
+  # create models
+  with tf.name_scope('Train'):
+    opt, lr = optimizer.get_optimizer(config['optimizer'], config['learning_rate'])
+    with tf.variable_scope("Model", reuse = None, initializer = initializer):
+      train_model = model.Model(is_training = True,
+                                config = config,
+                                seq_length = config['tgt_length'] - 1,
+                                optimizer = opt,
+                                lr = lr)
+
+  with tf.name_scope('Test'):
+    with tf.variable_scope("Model", reuse = True):
+      test_model = model.Model(is_training = False,
+                               config = config,
+                               seq_length = 1)
+
+  sv = tf.train.Supervisor(logdir = config['logdir'])
+  sess_config = tf.ConfigProto(allow_soft_placement = True,
+                               log_device_placement = True)
+  sess_config.gpu_options.allow_growth = True
+  sess_config.gpu_options.per_process_gpu_memory_fraction = 0.9
+
   # load Data
   train_data = data_reader.DataReader(src_data = config['train_data']['src'][0],
                                       tgt_data = config['train_data']['tgt'][0],
@@ -208,24 +244,6 @@ def train(config):
                                       tgt_length = config['tgt_length'],
                                       batch_size = config['batch_size'])
 
-  initializer = tf.random_uniform_initializer(-config['init_scale'], config['init_scale'])
-
-  # create models
-  with tf.name_scope('Train'):
-    opt, lr = optimizer.get_optimizer("sgd", config['learning_rate'])
-    with tf.variable_scope("Model", reuse = None, initializer = initializer):
-      train_model = model.Model(is_training = True,
-                                config = config,
-                                seq_length = config['tgt_length'] - 1,
-                                optimizer = opt,
-                                lr = lr)
-
-  sv = tf.train.Supervisor(logdir = config['logdir'])
-  sess_config = tf.ConfigProto(allow_soft_placement = True,
-                               log_device_placement = False)
-  sess_config.gpu_options.allow_growth = True
-  sess_config.gpu_options.per_process_gpu_memory_fraction = 0.5
-
   tf.logging.info('Start Sess')
   with sv.managed_session(config=sess_config) as sess:
     for i in range(config['n_epoch']):
@@ -233,7 +251,8 @@ def train(config):
       train_model.assign_lr(sess, config['learning_rate'] * lr_decay)
 
       tf.logging.info('Iter %d Start, Learning_rate: %.4f' % (i, sess.run(train_model.lr)))
-      loss = run_epoch(sess, train_model, train_data, is_training = True)
+      loss = run_epoch(sess, train_model, train_data, is_training = True, \
+                       t_model = test_model, src_vocab = src_vocab, tgt_vocab = tgt_vocab)
       tf.logging.info('Iter %d: training_loss: %.4f' % (i, np.power(2, loss)))
 
 def main(_):
